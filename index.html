@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Step-by-Step One-Variable Equation Checker</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+
+  <!-- Babel Compiler for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+  <style>
+    /* Custom Scrollbar Styling */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+    
+    /* Ensure clean rendering inside iframes */
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow-x: hidden;
+      background-color: #0f172a;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fadeIn {
+      animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans h-full antialiased selection:bg-indigo-500 selection:text-white">
+
+  <div id="root" class="h-full flex flex-col"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // ==========================================
+    // ALGEBRAIC PARSING & EVALUATION ENGINE
+    // ==========================================
+
+    /**
+     * Standardize an expression string for numerical evaluation.
+     * E.g., '3(x - 2)' -> '3*(x - 2)', '2x' -> '2*x'
+     */
+    function standardizeExpr(expr) {
+      if (!expr) return '';
+      let clean = expr.replace(/\s+/g, '').toLowerCase();
+      
+      // Implicit multiplication replacements
+      clean = clean.replace(/(\d)([a-z\(])/g, '$1*$2');
+      clean = clean.replace(/([a-z\)])(\d)/g, '$1*$2');
+      clean = clean.replace(/([a-z\)])(\()/g, '$1*$2');
+      clean = clean.replace(/(\))([a-z])/g, '$1*$2');
+      
+      return clean;
+    }
+
+    /**
+     * Find primary single variable in equation string
+     */
+    function detectVariable(str) {
+      const matches = str.match(/[a-zA-Z]/g);
+      if (!matches) return 'x';
+      const counts = {};
+      matches.forEach(m => {
+        const l = m.toLowerCase();
+        counts[l] = (counts[l] || 0) + 1;
+      });
+      let topVar = 'x';
+      let maxCount = 0;
+      for (let l in counts) {
+        if (counts[l] > maxCount) {
+          maxCount = counts[l];
+          topVar = l;
+        }
+      }
+      return topVar;
+    }
+
+    /**
+     * Safely evaluate math expression for variable substitution
+     */
+    function evaluateExpr(exprStr, variableName, variableValue) {
+      try {
+        let prep = standardizeExpr(exprStr);
+        const varRegex = new RegExp(variableName, 'g');
+        prep = prep.replace(varRegex, `(${variableValue})`);
+
+        const sanitized = prep.replace(/[^0-9\+\-\*\/\(\)\.]/g, '');
+        if (!sanitized) return NaN;
+        
+        const result = new Function(`return (${sanitized});`)();
+        return typeof result === 'number' && !isNaN(result) && isFinite(result) ? result : NaN;
+      } catch (e) {
+        return NaN;
+      }
+    }
+
+    /**
+     * Solve linear equation L = R numerically
+     */
+    function findEquationRoot(lhsStr, rhsStr, variableName) {
+      const v1 = 0;
+      const v2 = 10;
+      
+      const l1 = evaluateExpr(lhsStr, variableName, v1);
+      const r1 = evaluateExpr(rhsStr, variableName, v1);
+      
+      const l2 = evaluateExpr(lhsStr, variableName, v2);
+      const r2 = evaluateExpr(rhsStr, variableName, v2);
+      
+      if (isNaN(l1) || isNaN(r1) || isNaN(l2) || isNaN(r2)) return NaN;
+      
+      const diff1 = l1 - r1;
+      const diff2 = l2 - r2;
+      const slope = (diff2 - diff1) / 10;
+      
+      if (Math.abs(slope) < 1e-7) {
+        if (Math.abs(diff1) < 1e-7) return Infinity;
+        return NaN;
+      }
+      
+      return -diff1 / slope;
+    }
+
+    /**
+     * Diagnostic step equivalence verification
+     */
+    function checkStepEquivalence(originalLhs, originalRhs, stepLhs, stepRhs, variableName) {
+      const targetRoot = findEquationRoot(originalLhs, originalRhs, variableName);
+      
+      if (isNaN(targetRoot)) {
+        return { valid: false, reason: "Original equation is invalid or insoluble." };
+      }
+
+      const stepLAtRoot = evaluateExpr(stepLhs, variableName, targetRoot);
+      const stepRAtRoot = evaluateExpr(stepRhs, variableName, targetRoot);
+
+      if (isNaN(stepLAtRoot) || isNaN(stepRAtRoot)) {
+        return { valid: false, reason: "Syntax error or invalid mathematical expression in this step." };
+      }
+
+      const rootDiff = Math.abs(stepLAtRoot - stepRAtRoot);
+      if (rootDiff > 1e-5) {
+        return { 
+          valid: false, 
+          reason: `This step breaks equality. (Left = ${Number(stepLAtRoot.toFixed(2))}, Right = ${Number(stepRAtRoot.toFixed(2))} when ${variableName} = ${Number(targetRoot.toFixed(2))})` 
+        };
+      }
+
+      const altVal = targetRoot + 7.351;
+      const origLAlt = evaluateExpr(originalLhs, variableName, altVal);
+      const origRAlt = evaluateExpr(originalRhs, variableName, altVal);
+      const origDiffAlt = origLAlt - origRAlt;
+
+      const stepLAlt = evaluateExpr(stepLhs, variableName, altVal);
+      const stepRAlt = evaluateExpr(stepRhs, variableName, altVal);
+      const stepDiffAlt = stepLAlt - stepRAlt;
+
+      if (Math.abs(origDiffAlt) > 1e-5) {
+        const ratio = stepDiffAlt / origDiffAlt;
+        if (isNaN(ratio) || Math.abs(ratio) < 1e-5) {
+          const stepHasVar = stepLhs.includes(variableName) || stepRhs.includes(variableName);
+          if (!stepHasVar && Math.abs(targetRoot) > 1e-5) {
+            return { valid: false, reason: `The variable '${variableName}' was dropped prematurely without isolating it.` };
+          }
+        }
+      }
+
+      const isLhsOnlyVar = standardizeExpr(stepLhs) === variableName;
+      const isRhsOnlyVar = standardizeExpr(stepRhs) === variableName;
+      
+      const lhsVal = evaluateExpr(stepLhs, variableName, 0);
+      const rhsVal = evaluateExpr(stepRhs, variableName, 0);
+
+      const isLhsNumber = !isNaN(lhsVal) && standardizeExpr(stepLhs) === lhsVal.toString();
+      const isRhsNumber = !isNaN(rhsVal) && standardizeExpr(stepRhs) === rhsVal.toString();
+
+      const isSolved = (isLhsOnlyVar && isRhsNumber) || (isRhsOnlyVar && isLhsNumber);
+
+      return {
+        valid: true,
+        isSolved: isSolved,
+        targetRoot: targetRoot
+      };
+    }
+
+    // Categorized Presets
+    const PRESETS = [
+      { category: "1-Step", eq: "x + 7 = 15", desc: "Addition Isolation" },
+      { category: "1-Step", eq: "3x = 21", desc: "Multiplication Isolation" },
+      { category: "2-Step", eq: "2x + 5 = 15", desc: "Standard Linear Equation" },
+      { category: "2-Step", eq: "4y - 8 = 16", desc: "Two-step Subtraction" },
+      { category: "Distributive", eq: "3(x - 2) = 12", desc: "Expand Brackets" },
+      { category: "Both Sides", eq: "5n - 7 = 2n + 11", desc: "Variables on Both Sides" },
+      { category: "Multi-Step", eq: "7a - 3(a + 2) = 10", desc: "Combine Like Terms" },
+      { category: "Fractions", eq: "(2x + 4) / 3 = 6", desc: "Rational Expression" },
+    ];
+
+    function App() {
+      // Equation States
+      const [equationInput, setEquationInput] = useState("2x + 5 = 15");
+      const [activeEquation, setActiveEquation] = useState("2x + 5 = 15");
+      const [variableName, setVariableName] = useState("x");
+
+      // Steps State
+      const [steps, setSteps] = useState([]);
+      const [isSolved, setIsSolved] = useState(false);
+      const [targetSolution, setTargetSolution] = useState(null);
+
+      // Stats
+      const [solvedCount, setSolvedCount] = useState(0);
+      const [streak, setStreak] = useState(0);
+      const [totalAttempts, setTotalAttempts] = useState(0);
+
+      // Tool Toggles
+      const [showWalkthrough, setShowWalkthrough] = useState(false);
+      const [showHint, setShowHint] = useState(false);
+      const [currentHintText, setCurrentHintText] = useState("");
+      const [activeTab, setActiveTab] = useState("workspace");
+
+      // Scratchpad Canvas
+      const canvasRef = useRef(null);
+      const [isDrawing, setIsDrawing] = useState(false);
+
+      // Initialize Lucide icons on render updates
+      useEffect(() => {
+        if (window.lucide) {
+          window.lucide.createIcons();
+        }
+      });
+
+      // Initialize problem
+      useEffect(() => {
+        const parts = activeEquation.split("=");
+        if (parts.length === 2) {
+          const v = detectVariable(activeEquation);
+          setVariableName(v);
+          const root = findEquationRoot(parts[0], parts[1], v);
+          setTargetSolution(root);
+          setSteps([]);
+          setIsSolved(false);
+          setShowHint(false);
+          setShowWalkthrough(false);
+        }
+      }, [activeEquation]);
+
+      const loadPreset = (eqStr) => {
+        setEquationInput(eqStr);
+        setActiveEquation(eqStr);
+      };
+
+      const handleAddStep = () => {
+        if (isSolved) return;
+        const newId = Date.now();
+        setSteps(prev => [
+          ...prev, 
+          { id: newId, text: '', explanation: '', status: 'incomplete', feedback: '' }
+        ]);
+      };
+
+      const updateStepText = (id, text) => {
+        setSteps(prev => prev.map(s => s.id === id ? { ...s, text, status: 'incomplete', feedback: '' } : s));
+      };
+
+      const updateStepExplanation = (id, explanation) => {
+        setSteps(prev => prev.map(s => s.id === id ? { ...s, explanation } : s));
+      };
+
+      const verifyStep = (stepIndex) => {
+        const step = steps[stepIndex];
+        if (!step || !step.text.trim()) return;
+
+        const parts = step.text.split("=");
+        if (parts.length !== 2 || !parts[0].trim() || !parts[1].trim()) {
+          setSteps(prev => prev.map((s, idx) => idx === stepIndex ? {
+            ...s,
+            status: 'invalid',
+            feedback: "Enter a valid equation with '=' separating both sides (e.g. '2x = 10')."
+          } : s));
+          return;
+        }
+
+        const prevLhs = stepIndex === 0 ? activeEquation.split("=")[0] : steps[stepIndex - 1].text.split("=")[0];
+        const prevRhs = stepIndex === 0 ? activeEquation.split("=")[1] : steps[stepIndex - 1].text.split("=")[1];
+
+        const stepLhs = parts[0];
+        const stepRhs = parts[1];
+
+        const result = checkStepEquivalence(prevLhs, prevRhs, stepLhs, stepRhs, variableName);
+
+        setTotalAttempts(a => a + 1);
+
+        if (result.valid) {
+          if (result.isSolved) {
+            setIsSolved(true);
+            setSolvedCount(c => c + 1);
+            setStreak(s => s + 1);
+            
+            // Trigger Confetti Celebration
+            if (window.confetti) {
+              window.confetti({
+                particleCount: 80,
+                spread: 70,
+                origin: { y: 0.6 }
+              });
+            }
+          }
+
+          setSteps(prev => prev.map((s, idx) => idx === stepIndex ? {
+            ...s,
+            status: result.isSolved ? 'solved' : 'valid',
+            feedback: result.isSolved ? `🎉 Perfect! Variable '${variableName}' isolated and equation solved!` : "✅ Valid step! Equation balance maintained."
+          } : s));
+        } else {
+          setStreak(0);
+          setSteps(prev => prev.map((s, idx) => idx === stepIndex ? {
+            ...s,
+            status: 'invalid',
+            feedback: `❌ ${result.reason}`
+          } : s));
+        }
+      };
+
+      const removeStep = (id) => {
+        setSteps(prev => prev.filter(s => s.id !== id));
+        setIsSolved(false);
+      };
+
+      const resetProblem = () => {
+        setSteps([]);
+        setIsSolved(false);
+        setShowHint(false);
+        setShowWalkthrough(false);
+      };
+
+      const generateHint = () => {
+        if (isSolved) {
+          setCurrentHintText("You have already solved this equation! Great job!");
+          setShowHint(true);
+          return;
+        }
+
+        const currentEq = steps.length > 0 && steps[steps.length - 1].status === 'valid'
+          ? steps[steps.length - 1].text
+          : activeEquation;
+
+        const parts = currentEq.split("=");
+        if (parts.length !== 2) return;
+
+        const lhs = parts[0];
+        const rhs = parts[1];
+
+        let hint = "";
+        if (lhs.includes("(") || rhs.includes("(")) {
+          hint = "💡 Hint: Expand parentheses first using the distributive property.";
+        } else if (lhs.includes(variableName) && rhs.includes(variableName)) {
+          hint = `💡 Hint: Group all '${variableName}' terms on one side by adding/subtracting variable terms.`;
+        } else if (lhs.includes("/") || rhs.includes("/")) {
+          hint = "💡 Hint: Clear fractions by multiplying both sides by the denominator.";
+        } else {
+          hint = `💡 Hint: Isolate '${variableName}' using inverse operations (e.g. subtract constant terms first).`;
+        }
+
+        setCurrentHintText(hint);
+        setShowHint(true);
+      };
+
+      const generateWalkthroughSteps = () => {
+        const walkthrough = [];
+        const parts = activeEquation.split("=");
+        if (parts.length !== 2) return walkthrough;
+
+        walkthrough.push({ step: "Original Equation", text: activeEquation, desc: "Given problem." });
+
+        if (activeEquation.includes("(")) {
+          walkthrough.push({ step: "Step 1", text: "Expand Brackets", desc: "Distribute multipliers over parentheses." });
+        }
+
+        if (activeEquation.includes(variableName) && activeEquation.split(variableName).length > 2) {
+          walkthrough.push({ step: "Step 2", text: "Group Variables", desc: `Move terms with '${variableName}' to one side.` });
+        }
+
+        walkthrough.push({ 
+          step: "Final Isolation", 
+          text: `${variableName} = ${targetSolution !== null ? Number(targetSolution.toFixed(2)) : '?' }`, 
+          desc: `Perform division/subtraction to solve for '${variableName}'.` 
+        });
+
+        return walkthrough;
+      };
+
+      // Scratchpad drawing logic
+      const startDrawing = (e) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        const rect = canvas.getBoundingClientRect();
+        ctx.beginPath();
+        ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+        setIsDrawing(true);
+      };
+
+      const draw = (e) => {
+        if (!isDrawing) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        const rect = canvas.getBoundingClientRect();
+        ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+        ctx.strokeStyle = "#3b82f6";
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+        ctx.stroke();
+      };
+
+      const stopDrawing = () => setIsDrawing(false);
+
+      const clearCanvas = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      };
+
+      return (
+        <div className="flex flex-col h-full bg-slate-900 text-slate-100 overflow-y-auto">
+          {/* Responsive Embedded Header */}
+          <header className="border-b border-slate-800 bg-slate-950/90 backdrop-blur sticky top-0 z-50 px-4 py-2.5">
+            <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-600/20 border border-indigo-500/30 rounded-lg text-indigo-400">
+                  <i data-lucide="scale" className="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h1 className="text-base font-bold bg-gradient-to-r from-indigo-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent leading-tight">
+                    Equation Step Checker
+                  </h1>
+                  <p className="text-[11px] text-slate-400">Interactive One-Variable Algebra Validator</p>
+                </div>
+              </div>
+
+              {/* Gamified Stats Bar */}
+              <div className="flex items-center gap-3 bg-slate-900/90 border border-slate-800 rounded-lg px-3 py-1.5 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <i data-lucide="trophy" className="w-3.5 h-3.5 text-amber-400"></i>
+                  <span className="text-slate-400">Solved:</span>
+                  <span className="font-semibold text-slate-200">{solvedCount}</span>
+                </div>
+                <div className="h-4 w-px bg-slate-800" />
+                <div className="flex items-center gap-1.5">
+                  <i data-lucide="zap" className="w-3.5 h-3.5 text-orange-400"></i>
+                  <span className="text-slate-400">Streak:</span>
+                  <span className="font-semibold text-slate-200">{streak} 🔥</span>
+                </div>
+                <div className="h-4 w-px bg-slate-800" />
+                <div className="flex items-center gap-1.5">
+                  <i data-lucide="award" className="w-3.5 h-3.5 text-emerald-400"></i>
+                  <span className="text-slate-400">Accuracy:</span>
+                  <span className="font-semibold text-slate-200">
+                    {totalAttempts > 0 ? Math.round((solvedCount / totalAttempts) * 100) : 100}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Layout Grid */}
+          <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 grid grid-cols-1 lg:grid-cols-12 gap-5">
+            
+            {/* LEFT COLUMN: Controls & Visual Aids (4 cols) */}
+            <div className="lg:col-span-4 space-y-4">
+              
+              {/* Equation Setup Card */}
+              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2.5 flex items-center gap-1.5">
+                  <i data-lucide="pen-tool" className="w-3.5 h-3.5 text-indigo-400"></i> Enter Equation
+                </h2>
+                
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (equationInput.includes("=")) {
+                      setActiveEquation(equationInput);
+                    }
+                  }} 
+                  className="space-y-2.5"
+                >
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={equationInput}
+                      onChange={(e) => setEquationInput(e.target.value)}
+                      placeholder="e.g. 3x + 5 = 20"
+                      className="flex-1 bg-slate-900 border border-slate-700 focus:border-indigo-500 rounded-lg px-3 py-1.5 text-slate-100 font-mono text-xs outline-none transition"
+                    />
+                    <button
+                      type="submit"
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition flex items-center gap-1 shadow-md shadow-indigo-600/20"
+                    >
+                      Load
+                    </button>
+                  </div>
+                </form>
+
+                {/* Preset Selector */}
+                <div className="mt-3.5">
+                  <label className="text-[11px] text-slate-400 mb-1.5 block font-medium">Sample Preset Equations</label>
+                  <div className="flex flex-col gap-1 max-h-40 overflow-y-auto pr-1">
+                    {PRESETS.map((preset, i) => (
+                      <button
+                        key={i}
+                        onClick={() => loadPreset(preset.eq)}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border transition text-left flex items-center justify-between w-full ${
+                          activeEquation === preset.eq 
+                            ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-300 font-medium' 
+                            : 'bg-slate-900/80 border-slate-800 hover:border-slate-700 text-slate-300'
+                        }`}
+                      >
+                        <span className="font-mono text-xs">{preset.eq}</span>
+                        <span className="text-[10px] text-slate-400 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
+                          {preset.category}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Interactive Balance Scale Visualizer */}
+              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <i data-lucide="scale" className="w-3.5 h-3.5 text-emerald-400"></i> Balance Scale Model
+                </h2>
+                <p className="text-[11px] text-slate-400 mb-3">
+                  Equal operations keep both pans balanced.
+                </p>
+
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 flex flex-col items-center justify-center min-h-[140px] relative">
+                  <div className="w-full flex justify-between items-center px-2 mb-1">
+                    <div className="text-center">
+                      <span className="text-[9px] uppercase tracking-wider text-slate-500 block">LHS</span>
+                      <span className="font-mono text-xs text-indigo-400 font-semibold">
+                        {activeEquation.split("=")[0] || "?"}
+                      </span>
+                    </div>
+                    <div className="text-center">
+                      <span className="text-[9px] uppercase tracking-wider text-slate-500 block">RHS</span>
+                      <span className="font-mono text-xs text-emerald-400 font-semibold">
+                        {activeEquation.split("=")[1] || "?"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="w-full relative flex flex-col items-center my-2">
+                    <div className="w-3/4 h-1 bg-slate-700 rounded-full relative flex justify-between items-center">
+                      <div className="w-10 h-6 border-b-2 border-x-2 border-indigo-500/60 rounded-b-md absolute -left-1 top-1 flex items-center justify-center bg-indigo-500/10">
+                        <span className="text-[9px] text-indigo-300 font-mono">L</span>
+                      </div>
+                      <div className="w-10 h-6 border-b-2 border-x-2 border-emerald-500/60 rounded-b-md absolute -right-1 top-1 flex items-center justify-center bg-emerald-500/10">
+                        <span className="text-[9px] text-emerald-300 font-mono">R</span>
+                      </div>
+                    </div>
+                    <div className="w-0 h-0 border-l-[10px] border-l-transparent border-r-[10px] border-r-transparent border-b-[16px] border-b-slate-600 mt-1"></div>
+                  </div>
+
+                  <div className="text-[10px] text-emerald-400 font-medium bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded-full">
+                    ⚖️ Balanced
+                  </div>
+                </div>
+              </div>
+
+              {/* Hints & Solution Guide */}
+              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm space-y-2.5">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <i data-lucide="sparkles" className="w-3.5 h-3.5 text-amber-400"></i> Learning Guidance
+                </h2>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={generateHint}
+                    className="flex-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-lg px-2.5 py-1.5 text-xs font-medium transition flex items-center justify-center gap-1"
+                  >
+                    <i data-lucide="lightbulb" className="w-3.5 h-3.5"></i> Get Hint
+                  </button>
+                  <button
+                    onClick={() => setShowWalkthrough(!showWalkthrough)}
+                    className="flex-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 rounded-lg px-2.5 py-1.5 text-xs font-medium transition flex items-center justify-center gap-1"
+                  >
+                    <i data-lucide="eye" className="w-3.5 h-3.5"></i> Full Solution
+                  </button>
+                </div>
+
+                {showHint && (
+                  <div className="bg-amber-950/30 border border-amber-500/30 rounded-lg p-2.5 text-xs text-amber-200/90 animate-fadeIn flex items-start gap-2">
+                    <i data-lucide="lightbulb" className="w-3.5 h-3.5 text-amber-400 flex-shrink-0 mt-0.5"></i>
+                    <span className="flex-1">{currentHintText}</span>
+                    <button onClick={() => setShowHint(false)} className="text-amber-400/60 hover:text-amber-300 text-sm">×</button>
+                  </div>
+                )}
+
+                {showWalkthrough && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 space-y-1.5 animate-fadeIn text-xs">
+                    <span className="font-semibold text-slate-300 block border-b border-slate-800 pb-1">
+                      Step-by-Step Guide:
+                    </span>
+                    {generateWalkthroughSteps().map((s, idx) => (
+                      <div key={idx} className="bg-slate-950 p-2 rounded border border-slate-800">
+                        <div className="flex justify-between text-indigo-400 font-mono font-medium text-[11px]">
+                          <span>{s.step}</span>
+                          <span>{s.text}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400">{s.desc}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* RIGHT COLUMN: Step Work Area & Scratchpad (8 cols) */}
+            <div className="lg:col-span-8 flex flex-col space-y-4">
+              
+              {/* Tab Nav */}
+              <div className="flex items-center justify-between bg-slate-950/60 border border-slate-800 p-1 rounded-xl backdrop-blur-sm">
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setActiveTab("workspace")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 ${
+                      activeTab === "workspace"
+                        ? "bg-indigo-600 text-white shadow"
+                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+                    }`}
+                  >
+                    <i data-lucide="book-open" className="w-3.5 h-3.5"></i> Step Work Area
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("scratchpad")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 ${
+                      activeTab === "scratchpad"
+                        ? "bg-indigo-600 text-white shadow"
+                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+                    }`}
+                  >
+                    <i data-lucide="pen-tool" className="w-3.5 h-3.5"></i> Scratchpad
+                  </button>
+                </div>
+
+                <button
+                  onClick={resetProblem}
+                  className="text-xs text-slate-400 hover:text-rose-400 px-2.5 py-1 rounded border border-transparent hover:border-rose-500/30 transition flex items-center gap-1"
+                >
+                  <i data-lucide="rotate-ccw" className="w-3.5 h-3.5"></i> Reset
+                </button>
+              </div>
+
+              {/* WORKSPACE TAB */}
+              {activeTab === "workspace" && (
+                <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm flex-1 flex flex-col justify-between">
+                  <div>
+                    {/* Active Target Problem Banner */}
+                    <div className="bg-gradient-to-r from-indigo-950/50 via-slate-900 to-slate-900 border border-indigo-500/30 rounded-xl p-3.5 mb-4 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] uppercase tracking-wider text-indigo-400 font-semibold block mb-0.5">
+                          Target Equation
+                        </span>
+                        <div className="text-xl font-mono font-bold text-slate-100 tracking-wide">
+                          {activeEquation}
+                        </div>
+                      </div>
+                      <div className="bg-slate-950/80 border border-slate-800 rounded-lg px-2.5 py-1 text-right">
+                        <span className="text-[9px] text-slate-500 block uppercase">Variable</span>
+                        <span className="text-xs font-mono font-bold text-emerald-400">{variableName}</span>
+                      </div>
+                    </div>
+
+                    {/* Step Work Items */}
+                    <div className="space-y-3 mb-4">
+                      {steps.length === 0 ? (
+                        <div className="border border-dashed border-slate-800 rounded-xl p-6 text-center bg-slate-900/30">
+                          <i data-lucide="help-circle" className="w-8 h-8 text-slate-600 mx-auto mb-2"></i>
+                          <p className="text-xs text-slate-300 font-medium">No steps entered yet</p>
+                          <p className="text-[11px] text-slate-500 max-w-xs mx-auto mt-0.5 mb-3">
+                            Click "Add Step" below to type your first line in solving {activeEquation}.
+                          </p>
+                          <button
+                            onClick={handleAddStep}
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs transition inline-flex items-center gap-1 shadow-md shadow-indigo-600/20"
+                          >
+                            <i data-lucide="plus" className="w-3.5 h-3.5"></i> Add First Step
+                          </button>
+                        </div>
+                      ) : (
+                        steps.map((step, idx) => (
+                          <div
+                            key={step.id}
+                            className={`border rounded-xl p-3 transition-all ${
+                              step.status === 'valid'
+                                ? 'bg-emerald-950/10 border-emerald-500/40'
+                                : step.status === 'invalid'
+                                ? 'bg-rose-950/10 border-rose-500/40'
+                                : step.status === 'solved'
+                                ? 'bg-amber-950/20 border-amber-500/50 shadow-lg'
+                                : 'bg-slate-900/80 border-slate-800'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs font-semibold text-slate-400 flex items-center gap-1">
+                                <span className="w-4 h-4 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center text-[10px]">
+                                  {idx + 1}
+                                </span>
+                                Step {idx + 1}
+                              </span>
+
+                              <div className="flex items-center gap-2">
+                                {step.status === 'valid' && (
+                                  <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-medium">
+                                    <i data-lucide="check-circle-2" className="w-3 h-3"></i> Valid Step
+                                  </span>
+                                )}
+                                {step.status === 'invalid' && (
+                                  <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-medium">
+                                    <i data-lucide="x-circle" className="w-3 h-3"></i> Error
+                                  </span>
+                                )}
+                                {step.status === 'solved' && (
+                                  <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-semibold animate-pulse">
+                                    🎉 Solved!
+                                  </span>
+                                )}
+
+                                <button
+                                  onClick={() => removeStep(step.id)}
+                                  className="text-slate-500 hover:text-rose-400 p-1 rounded"
+                                  title="Remove Step"
+                                >
+                                  <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Step Input Controls */}
+                            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                              <div className="sm:col-span-7">
+                                <input
+                                  type="text"
+                                  value={step.text}
+                                  onChange={(e) => updateStepText(step.id, e.target.value)}
+                                  placeholder="e.g. 2x = 10"
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') verifyStep(idx);
+                                  }}
+                                  disabled={step.status === 'solved'}
+                                  className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs outline-none transition"
+                                />
+                              </div>
+
+                              <div className="sm:col-span-5 flex gap-1.5">
+                                <input
+                                  type="text"
+                                  value={step.explanation}
+                                  onChange={(e) => updateStepExplanation(step.id, e.target.value)}
+                                  placeholder="Operation (e.g. Subtract 5)"
+                                  className="flex-1 bg-slate-950 border border-slate-800 text-[11px] rounded-lg px-2 py-1.5 text-slate-400 outline-none"
+                                />
+
+                                <button
+                                  onClick={() => verifyStep(idx)}
+                                  disabled={step.status === 'solved'}
+                                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg transition flex items-center gap-1 flex-shrink-0"
+                                >
+                                  Check
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Feedback Banner */}
+                            {step.feedback && (
+                              <div className={`mt-2 text-[11px] p-2 rounded-lg flex items-start gap-1.5 ${
+                                step.status === 'valid' || step.status === 'solved'
+                                  ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-800/40'
+                                  : 'bg-rose-950/40 text-rose-300 border border-rose-800/40'
+                              }`}>
+                                <i data-lucide={step.status === 'valid' || step.status === 'solved' ? "check-circle-2" : "alert-circle"} className="w-3.5 h-3.5 flex-shrink-0 mt-0.5"></i>
+                                <span>{step.feedback}</span>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Add Step Controls */}
+                  <div className="border-t border-slate-800 pt-3 flex items-center justify-between gap-2">
+                    <button
+                      onClick={handleAddStep}
+                      disabled={isSolved}
+                      className="bg-slate-900 hover:bg-slate-800 text-indigo-400 border border-indigo-500/30 font-medium px-3 py-1.5 rounded-lg text-xs transition flex items-center gap-1.5"
+                    >
+                      <i data-lucide="plus" className="w-3.5 h-3.5"></i> Add Next Step
+                    </button>
+
+                    {isSolved && (
+                      <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-3 py-1.5 rounded-lg text-xs font-bold text-center animate-bounce flex items-center gap-1.5">
+                        <i data-lucide="sparkles" className="w-3.5 h-3.5 text-emerald-400"></i> Solved!
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* SCRATCHPAD TAB */}
+              {activeTab === "scratchpad" && (
+                <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm flex-1 flex flex-col">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-slate-400 flex items-center gap-1">
+                      <i data-lucide="pen-tool" className="w-3.5 h-3.5 text-indigo-400"></i> Freehand Scratchpad Canvas
+                    </span>
+                    <button
+                      onClick={clearCanvas}
+                      className="text-xs text-rose-400 hover:text-rose-300 px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 transition flex items-center gap-1"
+                    >
+                      <i data-lucide="eraser" className="w-3 h-3"></i> Clear
+                    </button>
+                  </div>
+
+                  <div className="flex-1 bg-slate-900 border border-slate-800 rounded-lg relative overflow-hidden min-h-[300px]">
+                    <canvas
+                      ref={canvasRef}
+                      width={700}
+                      height={400}
+                      onMouseDown={startDrawing}
+                      onMouseMove={draw}
+                      onMouseUp={stopDrawing}
+                      onMouseLeave={stopDrawing}
+                      className="w-full h-full cursor-crosshair touch-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    // Render React Application
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
